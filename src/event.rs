@@ -47,6 +47,15 @@ pub enum Event {
 		/// The hash of the payment.
 		payment_hash: PaymentHash,
 	},
+	/// A payment is claimable
+	PaymentClaimable {
+		/// The hash of the payment.
+		payment_hash: PaymentHash,
+		/// The value, in thousandths of a satoshi, that has been received.
+		amount_msat: u64,
+		/// The block height at which this payment will be failed back and will no longer be eligible for claiming.
+		claim_deadline: Option<u32>,
+	},
 	/// A payment has been received.
 	PaymentReceived {
 		/// The hash of the payment.
@@ -98,23 +107,28 @@ impl_writeable_tlv_based_enum!(Event,
 	(1, PaymentFailed) => {
 		(0, payment_hash, required),
 	},
-	(2, PaymentReceived) => {
+	(2, PaymentClaimable) => {
+		(0, payment_hash, required),
+		(2, amount_msat, required),
+		(4, claim_deadline, required),
+	},
+	(3, PaymentReceived) => {
 		(0, payment_hash, required),
 		(2, amount_msat, required),
 	},
-	(3, ChannelReady) => {
+	(4, ChannelReady) => {
 		(0, channel_id, required),
 		(1, counterparty_node_id, option),
 		(2, user_channel_id, required),
 	},
-	(4, ChannelPending) => {
+	(5, ChannelPending) => {
 		(0, channel_id, required),
 		(2, user_channel_id, required),
 		(4, former_temporary_channel_id, required),
 		(6, counterparty_node_id, required),
 		(8, funding_txo, required),
 	},
-	(5, ChannelClosed) => {
+	(6, ChannelClosed) => {
 		(0, channel_id, required),
 		(1, counterparty_node_id, option),
 		(2, user_channel_id, required),
@@ -356,7 +370,7 @@ where
 				receiver_node_id: _,
 				via_channel_id: _,
 				via_user_channel_id: _,
-				claim_deadline: _,
+				claim_deadline,
 				onion_fields: _,
 				counterparty_skimmed_fee_msat: _,
 			} => {
@@ -404,21 +418,18 @@ where
 				if let Some(preimage) = payment_preimage {
 					self.channel_manager.claim_funds(preimage);
 				} else {
-					log_error!(
+					log_info!(
 						self.logger,
-						"Failed to claim payment with hash {}: preimage unknown.",
+						"We received a payment with payment hash {} of unknown preimage.",
 						hex_utils::to_string(&payment_hash.0),
 					);
-					self.channel_manager.fail_htlc_backwards(&payment_hash);
 
-					let update = PaymentDetailsUpdate {
-						status: Some(PaymentStatus::Failed),
-						..PaymentDetailsUpdate::new(payment_hash)
-					};
-					self.payment_store.update(&update).unwrap_or_else(|e| {
-						log_error!(self.logger, "Failed to access payment store: {}", e);
-						panic!("Failed to access payment store");
-					});
+					self.event_queue
+						.add_event(Event::PaymentClaimable { payment_hash, amount_msat, claim_deadline })
+						.unwrap_or_else(|e| {
+							log_error!(self.logger, "Failed to push to event queue: {}", e);
+							panic!("Failed to push to event queue");
+						});
 				}
 			}
 			LdkEvent::PaymentClaimed {

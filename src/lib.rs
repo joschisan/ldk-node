@@ -153,6 +153,7 @@ use bitcoin::{Address, Network, Txid};
 
 use rand::Rng;
 
+use crate::payment_store::PaymentDetailsUpdate;
 use std::default::Default;
 use std::net::ToSocketAddrs;
 use std::sync::{Arc, Mutex, RwLock};
@@ -1572,7 +1573,7 @@ impl<K: KVStore + Sync + Send + 'static> Node<K> {
 			}
 		};
 
-		let payment_hash = PaymentHash((*invoice.payment_hash()).into_inner());
+		let payment_hash = PaymentHash((*invoice.payment_hash()).to_byte_array());
 		let payment = PaymentDetails {
 			hash: payment_hash,
 			preimage: None,
@@ -1590,6 +1591,26 @@ impl<K: KVStore + Sync + Send + 'static> Node<K> {
 	/// Claims the funds of a payment with the given preimage.
 	pub fn claim_funds_with_payment_preimage(&self, payment_preimage: PaymentPreimage) {
 		self.channel_manager.claim_funds(payment_preimage);
+	}
+
+	/// Fails the incoming payment with the given payment hash.
+	pub fn fail_payment_backwards(&self, payment_hash: PaymentHash) {
+		log_error!(
+			self.logger,
+			"Failed to claim payment with hash {}: preimage unknown.",
+			hex_utils::to_string(&payment_hash.0),
+		);
+
+		self.channel_manager.fail_htlc_backwards(&payment_hash);
+
+		let update = PaymentDetailsUpdate {
+			status: Some(PaymentStatus::Failed),
+			..PaymentDetailsUpdate::new(payment_hash)
+		};
+		self.payment_store.update(&update).unwrap_or_else(|e| {
+			log_error!(self.logger, "Failed to access payment store: {}", e);
+			panic!("Failed to access payment store");
+		});
 	}
 
 	/// Retrieve the details of a specific payment with the given hash.
