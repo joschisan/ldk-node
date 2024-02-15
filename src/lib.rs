@@ -1542,6 +1542,56 @@ impl<K: KVStore + Sync + Send + 'static> Node<K> {
 		Ok(invoice)
 	}
 
+	// Returns a payable invoice that can be used to request and receive a payment of the amount
+	/// given.
+	pub fn receive_payment_with_payment_hash(
+		&self, payment_hash: PaymentHash, amount_msat: Option<u64>, description: &str,
+		duration_since_epoch: Duration, expiry_secs: u32, min_final_cltv_expiry_delta: Option<u16>,
+	) -> Result<Bolt11Invoice, Error> {
+		let currency = Currency::from(self.config.network);
+		let keys_manager = Arc::clone(&self.keys_manager);
+		let invoice = match lightning_invoice::utils::create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_hash(
+			&self.channel_manager,
+			keys_manager,
+			Arc::clone(&self.logger),
+			currency,
+			amount_msat,
+			description.to_string(),
+			duration_since_epoch,
+			expiry_secs,
+			payment_hash,
+			min_final_cltv_expiry_delta,
+		) {
+			Ok(inv) => {
+				log_info!(self.logger, "Invoice created: {}", inv);
+				inv
+			}
+			Err(e) => {
+				log_error!(self.logger, "Failed to create invoice: {}", e);
+				return Err(Error::InvoiceCreationFailed);
+			}
+		};
+
+		let payment_hash = PaymentHash((*invoice.payment_hash()).into_inner());
+		let payment = PaymentDetails {
+			hash: payment_hash,
+			preimage: None,
+			secret: Some(invoice.payment_secret().clone()),
+			amount_msat,
+			direction: PaymentDirection::Inbound,
+			status: PaymentStatus::Pending,
+		};
+
+		self.payment_store.insert(payment)?;
+
+		Ok(invoice)
+	}
+
+	/// Claims the funds of a payment with the given preimage.
+	pub fn claim_funds_with_payment_preimage(&self, payment_preimage: PaymentPreimage) {
+		self.channel_manager.claim_funds(payment_preimage);
+	}
+
 	/// Retrieve the details of a specific payment with the given hash.
 	///
 	/// Returns `Some` if the payment was known and `None` otherwise.
