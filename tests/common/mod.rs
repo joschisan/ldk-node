@@ -31,6 +31,7 @@ use electrum_client::ElectrumApi;
 use ldk_node::config::{AsyncPaymentsRole, Config, ElectrumSyncConfig, EsploraSyncConfig};
 use ldk_node::io::sqlite_store::SqliteStore;
 use ldk_node::payment::{PaymentDirection, PaymentKind, PaymentStatus};
+use ldk_node::probing::ProbingConfig;
 use ldk_node::{
 	Builder, CustomTlvRecord, Event, LightningBalance, Node, NodeError, PendingSweepBalance,
 };
@@ -268,9 +269,9 @@ pub(crate) fn random_config(anchor_channels: bool) -> TestConfig {
 }
 
 #[cfg(feature = "uniffi")]
-type TestNode = Arc<Node>;
+pub(crate) type TestNode = Arc<Node>;
 #[cfg(not(feature = "uniffi"))]
-type TestNode = Node;
+pub(crate) type TestNode = Node;
 
 #[derive(Clone)]
 pub(crate) enum TestChainSource<'a> {
@@ -297,6 +298,7 @@ pub(crate) struct TestConfig {
 	pub node_config: Config,
 	pub log_writer: TestLogWriter,
 	pub store_type: TestStoreType,
+	pub probing: Option<ProbingConfig>,
 }
 
 macro_rules! setup_builder {
@@ -427,6 +429,10 @@ pub(crate) fn setup_node_for_async_payments(
 
 	builder.set_async_payments_role(async_payments_role).unwrap();
 
+	if let Some(probing) = config.probing {
+		builder.set_probing_config(probing.into());
+	}
+
 	let node = match config.store_type {
 		TestStoreType::TestSyncStore => {
 			let kv_store = Arc::new(TestSyncStore::new(config.node_config.storage_dir_path.into()));
@@ -523,6 +529,37 @@ pub(crate) async fn wait_for_outpoint_spend<E: ElectrumApi>(electrs: &E, outpoin
 		is_spent.then_some(())
 	})
 	.await;
+}
+
+/// Polls the channel from `source_node` to `counterparty_node` until it reports `is_usable`
+/// and can carry an HTLC of `min_amount_msat` from `source_node`'s side.
+///
+/// After `ChannelReady`, channel-monitor persistence can lag for tens of seconds on slow
+/// CI runners; during that window `send_probe`/`send_payment` reject with
+/// `ParameterError("...monitor update is in progress...")`. This helper gives tests a
+/// deterministic readiness gate instead of racing the monitor-update pipeline.
+pub(crate) async fn wait_for_channel_ready_to_send(
+	source_node: &TestNode, counterparty_node: &TestNode, min_amount_msat: u64,
+) {
+	let counterparty = counterparty_node.node_id();
+	let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
+	while tokio::time::Instant::now() < deadline {
+		let ready = source_node.list_channels().iter().any(|c| {
+			c.counterparty.node_id == counterparty
+				&& c.is_usable
+				&& c.next_outbound_htlc_limit_msat >= min_amount_msat
+		});
+		if ready {
+			return;
+		}
+		tokio::time::sleep(Duration::from_millis(100)).await;
+	}
+	panic!(
+		"channel from {} to {} not ready to send {} msat within 180s",
+		source_node.node_id(),
+		counterparty,
+		min_amount_msat,
+	);
 }
 
 pub(crate) async fn exponential_backoff_poll<T, F>(mut poll: F) -> T
@@ -650,12 +687,18 @@ pub async fn open_channel(
 	node_a: &TestNode, node_b: &TestNode, funding_amount_sat: u64, should_announce: bool,
 	electrsd: &ElectrsD,
 ) -> OutPoint {
-	open_channel_push_amt(node_a, node_b, funding_amount_sat, None, should_announce, electrsd).await
+	let funding_txo =
+		open_channel_no_wait(node_a, node_b, funding_amount_sat, None, should_announce).await;
+	wait_for_tx(&electrsd.client, funding_txo.txid).await;
+	funding_txo
 }
 
-pub async fn open_channel_push_amt(
+/// Like [`open_channel`] but skips the `wait_for_tx` electrum check so that
+/// multiple channels can be opened back-to-back before any blocks are mined.
+/// The caller is responsible for mining blocks and confirming the funding txs.
+pub async fn open_channel_no_wait(
 	node_a: &TestNode, node_b: &TestNode, funding_amount_sat: u64, push_amount_msat: Option<u64>,
-	should_announce: bool, electrsd: &ElectrsD,
+	should_announce: bool,
 ) -> OutPoint {
 	if should_announce {
 		node_a
@@ -683,8 +726,6 @@ pub async fn open_channel_push_amt(
 	let funding_txo_a = expect_channel_pending_event!(node_a, node_b.node_id());
 	let funding_txo_b = expect_channel_pending_event!(node_b, node_a.node_id());
 	assert_eq!(funding_txo_a, funding_txo_b);
-	wait_for_tx(&electrsd.client, funding_txo_a.txid).await;
-
 	funding_txo_a
 }
 
