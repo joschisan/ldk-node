@@ -96,10 +96,12 @@ pub mod logger;
 mod message_handler;
 pub mod payment;
 mod peer_store;
+pub mod probing;
 mod runtime;
 mod scoring;
 mod tx_broadcaster;
 mod types;
+mod util;
 mod wallet;
 
 use std::default::Default;
@@ -152,6 +154,9 @@ use payment::{
 	UnifiedQrPayment,
 };
 use peer_store::{PeerInfo, PeerStore};
+#[cfg(feature = "uniffi")]
+pub use probing::ArcedProbingConfigBuilder as ProbingConfigBuilder;
+use probing::{run_prober, Prober};
 use rand::Rng;
 use runtime::Runtime;
 use types::{
@@ -206,6 +211,7 @@ pub struct Node {
 	node_metrics: Arc<RwLock<NodeMetrics>>,
 	om_mailbox: Option<Arc<OnionMessageMailbox>>,
 	async_payments_role: Option<AsyncPaymentsRole>,
+	prober: Option<Arc<Prober>>,
 }
 
 impl Node {
@@ -554,10 +560,18 @@ impl Node {
 			static_invoice_store,
 			Arc::clone(&self.onion_messenger),
 			self.om_mailbox.clone(),
+			self.prober.clone(),
 			Arc::clone(&self.runtime),
 			Arc::clone(&self.logger),
 			Arc::clone(&self.config),
 		));
+
+		if let Some(prober) = self.prober.clone() {
+			let stop_rx = self.stop_sender.subscribe();
+			self.runtime.spawn_cancellable_background_task(async move {
+				run_prober(prober, stop_rx).await;
+			});
+		}
 
 		// Setup background processing
 		let background_persister = Arc::clone(&self.kv_store);
@@ -1002,6 +1016,11 @@ impl Node {
 			self.liquidity_source.clone(),
 			Arc::clone(&self.logger),
 		))
+	}
+
+	/// Returns a reference to the [`Prober`], or `None` if no probing strategy is configured.
+	pub fn prober(&self) -> Option<&Prober> {
+		self.prober.as_deref()
 	}
 
 	/// Retrieve a list of known channels.
