@@ -776,6 +776,7 @@ impl NodeBuilder {
 			self.gossip_source_config.as_ref(),
 			self.liquidity_source_config.as_ref(),
 			self.pathfinding_scores_sync_config.as_ref(),
+			self.probing_config.as_ref(),
 			self.async_payments_role,
 			seed_bytes,
 			runtime,
@@ -1872,6 +1873,7 @@ fn build_with_store_internal(
 			strategy,
 			interval: probing_cfg.interval,
 			max_locked_msat: probing_cfg.max_locked_msat,
+			in_flight: Default::default(),
 		})
 	});
 

@@ -208,6 +208,31 @@ pub(crate) fn setup_bitcoind_and_electrsd() -> (BitcoinD, ElectrsD) {
 	(bitcoind, electrsd)
 }
 
+pub(crate) fn random_chain_source<'a>(
+	bitcoind: &'a BitcoinD, electrsd: &'a ElectrsD,
+) -> TestChainSource<'a> {
+	let r = rand::random_range(0..3);
+	match r {
+		0 => {
+			println!("Randomly setting up Esplora chain syncing...");
+			TestChainSource::Esplora(electrsd)
+		},
+		1 => {
+			println!("Randomly setting up Electrum chain syncing...");
+			TestChainSource::Electrum(electrsd)
+		},
+		2 => {
+			println!("Randomly setting up Bitcoind RPC chain syncing...");
+			TestChainSource::BitcoindRpcSync(bitcoind)
+		},
+		3 => {
+			println!("Randomly setting up Bitcoind REST chain syncing...");
+			TestChainSource::BitcoindRestSync(bitcoind)
+		},
+		_ => unreachable!(),
+	}
+}
+
 pub(crate) fn random_storage_path() -> PathBuf {
 	let mut temp_path = std::env::temp_dir();
 	let mut rng = rng();
@@ -545,7 +570,7 @@ pub(crate) async fn wait_for_channel_ready_to_send(
 	let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
 	while tokio::time::Instant::now() < deadline {
 		let ready = source_node.list_channels().iter().any(|c| {
-			c.counterparty.node_id == counterparty
+			c.counterparty_node_id == counterparty
 				&& c.is_usable
 				&& c.next_outbound_htlc_limit_msat >= min_amount_msat
 		});
@@ -689,6 +714,17 @@ pub async fn open_channel(
 ) -> OutPoint {
 	let funding_txo =
 		open_channel_no_wait(node_a, node_b, funding_amount_sat, None, should_announce).await;
+	wait_for_tx(&electrsd.client, funding_txo.txid).await;
+	funding_txo
+}
+
+pub async fn open_channel_push_amt(
+	node_a: &TestNode, node_b: &TestNode, funding_amount_sat: u64, push_amount_msat: Option<u64>,
+	should_announce: bool, electrsd: &ElectrsD,
+) -> OutPoint {
+	let funding_txo =
+		open_channel_no_wait(node_a, node_b, funding_amount_sat, push_amount_msat, should_announce)
+			.await;
 	wait_for_tx(&electrsd.client, funding_txo.txid).await;
 	funding_txo
 }

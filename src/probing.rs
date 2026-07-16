@@ -68,7 +68,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bitcoin::secp256k1::PublicKey;
-use lightning::ln::channelmanager::{PaymentId, RecentPaymentDetails};
+use lightning::ln::channelmanager::PaymentId;
 use lightning::routing::gossip::NodeId;
 use lightning::routing::router::Router as LdkRouter;
 use lightning::routing::router::{
@@ -739,6 +739,13 @@ pub struct Prober {
 	pub interval: Duration,
 	/// Maximum total millisatoshis that may be locked in in-flight probes at any time.
 	pub max_locked_msat: u64,
+	/// Amounts locked by in-flight probes, keyed by the probe's payment id.
+	///
+	/// Upstream derives this from `ChannelManager::list_recent_payments`, but the
+	/// probe markers it relies on (`RecentPaymentDetails::Pending::is_probe`) are
+	/// not available in `lightning` 0.2, so this backport tracks dispatched probes
+	/// itself and clears them when the probe resolution event fires.
+	pub(crate) in_flight: Mutex<HashMap<PaymentId, u64>>,
 }
 
 fn fmt_path(path: &lightning::routing::router::Path) -> String {
@@ -752,23 +759,11 @@ fn fmt_path(path: &lightning::routing::router::Path) -> String {
 impl Prober {
 	/// Returns the total millisatoshis currently locked in in-flight probes.
 	pub fn locked_msat(&self) -> u64 {
-		return self
-			.channel_manager
-			.list_recent_payments()
-			.into_iter()
-			.filter_map(|p| match p {
-				RecentPaymentDetails::Pending {
-					is_probe: true,
-					total_msat,
-					pending_fee_msat,
-					..
-				} => Some(total_msat + pending_fee_msat.unwrap_or(0)),
-				_ => None,
-			})
-			.sum();
+		self.in_flight.lock().expect("in_flight lock poisoned").values().sum()
 	}
 
 	pub(crate) fn handle_background_probe_successful(&self, path: &Path, payment_id: PaymentId) {
+		self.in_flight.lock().expect("in_flight lock poisoned").remove(&payment_id);
 		log_debug!(
 			self.logger,
 			"Background probe with payment_id: {} succeeded along the path: {}",
@@ -778,6 +773,7 @@ impl Prober {
 	}
 
 	pub(crate) fn handle_background_probe_failed(&self, path: &Path, payment_id: PaymentId) {
+		self.in_flight.lock().expect("in_flight lock poisoned").remove(&payment_id);
 		log_debug!(
 			self.logger,
 			"Background probe with payment_id: {} failed along the path: {}",
@@ -811,6 +807,11 @@ pub(crate) async fn run_prober(prober: Arc<Prober>, mut stop_rx: tokio::sync::wa
 				}
 				match prober.channel_manager.send_probe(path.clone()) {
 					Ok((_, payment_id)) => {
+						prober
+							.in_flight
+							.lock()
+							.expect("in_flight lock poisoned")
+							.insert(payment_id, amount);
 						log_debug!(
 							prober.logger,
 							"Background probe with payment_id {} sent: locked {} msat, path: {}",

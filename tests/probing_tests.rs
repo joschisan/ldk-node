@@ -86,12 +86,12 @@ fn build_probe_path(
 	let ch_ab = node_a
 		.list_channels()
 		.into_iter()
-		.find(|ch| ch.counterparty.node_id == node_b.node_id() && ch.short_channel_id.is_some())
+		.find(|ch| ch.counterparty_node_id == node_b.node_id() && ch.short_channel_id.is_some())
 		.expect("A→B channel not found");
 	let ch_bc = node_b
 		.list_channels()
 		.into_iter()
-		.find(|ch| ch.counterparty.node_id == node_c.node_id() && ch.short_channel_id.is_some())
+		.find(|ch| ch.counterparty_node_id == node_c.node_id() && ch.short_channel_id.is_some())
 		.expect("B→C channel not found");
 
 	Path {
@@ -126,8 +126,8 @@ async fn probe_budget_increments_and_decrements() {
 	let (bitcoind, electrsd) = setup_bitcoind_and_electrsd();
 	let chain_source = random_chain_source(&bitcoind, &electrsd);
 
-	let node_b = setup_node(&chain_source, random_config(false));
-	let node_c = setup_node(&chain_source, random_config(false));
+	let node_b = setup_node(&chain_source, random_config(false), None);
+	let node_c = setup_node(&chain_source, random_config(false), None);
 
 	let mut config_a = random_config(false);
 	let strategy = FixedPathStrategy::new();
@@ -137,7 +137,7 @@ async fn probe_budget_increments_and_decrements() {
 			.max_locked_msat(10 * PROBE_AMOUNT_MSAT)
 			.build(),
 	);
-	let node_a = setup_node(&chain_source, config_a);
+	let node_a = setup_node(&chain_source, config_a, None);
 
 	let addr_a = node_a.onchain_payment().new_address().unwrap();
 	let addr_b = node_b.onchain_payment().new_address().unwrap();
@@ -219,8 +219,8 @@ async fn locked_msat_accounts_for_routing_fees() {
 	let (bitcoind, electrsd) = setup_bitcoind_and_electrsd();
 	let chain_source = random_chain_source(&bitcoind, &electrsd);
 
-	let node_b = setup_node(&chain_source, random_config(false));
-	let node_c = setup_node(&chain_source, random_config(false));
+	let node_b = setup_node(&chain_source, random_config(false), None);
+	let node_c = setup_node(&chain_source, random_config(false), None);
 
 	let mut config_a = random_config(false);
 	let strategy = FixedPathStrategy::new();
@@ -231,7 +231,7 @@ async fn locked_msat_accounts_for_routing_fees() {
 			.max_locked_msat(LOCKED_PER_PROBE_MSAT)
 			.build(),
 	);
-	let node_a = setup_node(&chain_source, config_a);
+	let node_a = setup_node(&chain_source, config_a, None);
 
 	let addr_a = node_a.onchain_payment().new_address().unwrap();
 	let addr_b = node_b.onchain_payment().new_address().unwrap();
@@ -308,8 +308,8 @@ async fn probing_budget_restored_after_node_restart() {
 	let (bitcoind, electrsd) = setup_bitcoind_and_electrsd();
 	let chain_source = random_chain_source(&bitcoind, &electrsd);
 
-	let node_b = setup_node(&chain_source, random_config(false));
-	let node_c = setup_node(&chain_source, random_config(false));
+	let node_b = setup_node(&chain_source, random_config(false), None);
+	let node_c = setup_node(&chain_source, random_config(false), None);
 
 	let mut config_a = random_config(false);
 	// Use a pure on-disk store so state survives the restart.
@@ -322,7 +322,7 @@ async fn probing_budget_restored_after_node_restart() {
 			.build(),
 	);
 	let restart_config = config_a.clone();
-	let node_a = setup_node(&chain_source, config_a);
+	let node_a = setup_node(&chain_source, config_a, None);
 
 	let addr_a = node_a.onchain_payment().new_address().unwrap();
 	let addr_b = node_b.onchain_payment().new_address().unwrap();
@@ -387,15 +387,19 @@ async fn probing_budget_restored_after_node_restart() {
 	node_a.stop().unwrap();
 
 	// Restart node_a from the same persisted state.
-	let node_a = setup_node(&chain_source, restart_config);
+	let node_a = setup_node(&chain_source, restart_config, None);
 
+	// Backport deviation: upstream restores the locked budget from the channel
+	// manager's recent-payments list, but the probe markers that requires are
+	// not available in `lightning` 0.2, so the in-memory accounting starts
+	// empty after a restart. The stale probe HTLC still resolves inside LDK;
+	// its resolution event is simply a no-op for the fresh prober.
 	let locked_after = node_a.prober().unwrap().locked_msat();
 	println!("After restart:  locked_msat = {}", locked_after);
-	assert!(
-		locked_after > 0,
-		"locked_msat was not restored after restart (before={} after={})",
+	assert_eq!(
+		locked_after, 0,
+		"backported prober should restart with an empty probe budget (before={})",
 		locked_before,
-		locked_after
 	);
 
 	node_a.stop().unwrap();
@@ -409,8 +413,8 @@ async fn exhausted_probe_budget_blocks_new_probes() {
 	let (bitcoind, electrsd) = setup_bitcoind_and_electrsd();
 	let chain_source = random_chain_source(&bitcoind, &electrsd);
 
-	let node_b = setup_node(&chain_source, random_config(false));
-	let node_c = setup_node(&chain_source, random_config(false));
+	let node_b = setup_node(&chain_source, random_config(false), None);
+	let node_c = setup_node(&chain_source, random_config(false), None);
 
 	let mut config_a = random_config(false);
 	let strategy = FixedPathStrategy::new();
@@ -421,7 +425,7 @@ async fn exhausted_probe_budget_blocks_new_probes() {
 			.max_locked_msat(max_locked_msat)
 			.build(),
 	);
-	let node_a = setup_node(&chain_source, config_a);
+	let node_a = setup_node(&chain_source, config_a, None);
 
 	let addr_a = node_a.onchain_payment().new_address().unwrap();
 	let addr_b = node_b.onchain_payment().new_address().unwrap();
