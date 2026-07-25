@@ -258,6 +258,7 @@ pub struct NodeBuilder {
 	runtime_handle: Option<tokio::runtime::Handle>,
 	pathfinding_scores_sync_config: Option<PathfindingScoresSyncConfig>,
 	probing_config: Option<ProbingConfig>,
+	scoring_fee_params: Option<ProbabilisticScoringFeeParameters>,
 }
 
 impl NodeBuilder {
@@ -277,6 +278,7 @@ impl NodeBuilder {
 		let runtime_handle = None;
 		let pathfinding_scores_sync_config = None;
 		let probing_config = None;
+		let scoring_fee_params = None;
 		Self {
 			config,
 			entropy_source_config,
@@ -288,6 +290,7 @@ impl NodeBuilder {
 			async_payments_role: None,
 			pathfinding_scores_sync_config,
 			probing_config,
+			scoring_fee_params,
 		}
 	}
 
@@ -614,6 +617,16 @@ impl NodeBuilder {
 		self
 	}
 
+	/// Sets custom [`ProbabilisticScoringFeeParameters`] for the router, e.g. to weight payment
+	/// success probability more heavily against routing fees. Defaults to
+	/// [`ProbabilisticScoringFeeParameters::default`].
+	pub fn set_scoring_fee_params(
+		&mut self, params: ProbabilisticScoringFeeParameters,
+	) -> &mut Self {
+		self.scoring_fee_params = Some(params);
+		self
+	}
+
 	/// Builds a [`Node`] instance with a [`SqliteStore`] backend and according to the options
 	/// previously configured.
 	pub fn build(&self) -> Result<Node, BuildError> {
@@ -776,6 +789,7 @@ impl NodeBuilder {
 			self.liquidity_source_config.as_ref(),
 			self.pathfinding_scores_sync_config.as_ref(),
 			self.probing_config.as_ref(),
+			self.scoring_fee_params.as_ref(),
 			self.async_payments_role,
 			seed_bytes,
 			runtime,
@@ -811,6 +825,7 @@ impl NodeBuilder {
 			self.liquidity_source_config.as_ref(),
 			self.pathfinding_scores_sync_config.as_ref(),
 			self.probing_config.as_ref(),
+			self.scoring_fee_params.as_ref(),
 			self.async_payments_role,
 			seed_bytes,
 			runtime,
@@ -1187,7 +1202,9 @@ fn build_with_store_internal(
 	gossip_source_config: Option<&GossipSourceConfig>,
 	liquidity_source_config: Option<&LiquiditySourceConfig>,
 	pathfinding_scores_sync_config: Option<&PathfindingScoresSyncConfig>,
-	probing_config: Option<&ProbingConfig>, async_payments_role: Option<AsyncPaymentsRole>,
+	probing_config: Option<&ProbingConfig>,
+	scoring_fee_params: Option<&ProbabilisticScoringFeeParameters>,
+	async_payments_role: Option<AsyncPaymentsRole>,
 	seed_bytes: [u8; 64], runtime: Arc<Runtime>, logger: Arc<Logger>, kv_store: Arc<DynStore>,
 ) -> Result<Node, BuildError> {
 	optionally_install_rustls_cryptoprovider();
@@ -1497,7 +1514,7 @@ fn build_with_store_internal(
 		},
 	}
 
-	let scoring_fee_params = ProbabilisticScoringFeeParameters::default();
+	let scoring_fee_params = scoring_fee_params.cloned().unwrap_or_default();
 	let router = Arc::new(DefaultRouter::new(
 		Arc::clone(&network_graph),
 		Arc::clone(&logger),
