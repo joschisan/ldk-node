@@ -1113,7 +1113,19 @@ where
 			},
 
 			LdkEvent::PaymentPathSuccessful { .. } => {},
-			LdkEvent::PaymentPathFailed { .. } => {},
+			LdkEvent::PaymentPathFailed {
+				payment_hash, failure, path, short_channel_id, payment_failed_permanently, ..
+			} => {
+				log_info!(
+					self.logger,
+					"Payment path failed for payment hash {:?} due to {:?} at short channel id {:?} (permanently: {}), path: {:?}",
+					payment_hash,
+					failure,
+					short_channel_id,
+					payment_failed_permanently,
+					path,
+				);
+			},
 			LdkEvent::ProbeSuccessful { path, payment_id, .. } => {
 				if let Some(prober) = &self.prober {
 					prober.handle_background_probe_successful(&path, payment_id);
