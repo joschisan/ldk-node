@@ -1072,6 +1072,41 @@ pub(crate) async fn do_channel_full_cycle<E: ElectrumApi>(
 	);
 	assert!(matches!(node_b.payment(&manual_payment_id).unwrap().kind, PaymentKind::Bolt11 { .. }));
 
+	// Test claiming manually registered payments that require a longer final CLTV expiry.
+	let manual_cltv_amount_msat = 5_532_000;
+	let min_final_cltv_expiry_delta = 81;
+	let manual_cltv_preimage = PaymentPreimage([44u8; 32]);
+	let manual_cltv_payment_hash =
+		PaymentHash(Sha256::hash(&manual_cltv_preimage.0).to_byte_array());
+	let manual_cltv_invoice = node_b
+		.bolt11_payment()
+		.receive_for_hash_with_min_final_cltv_expiry_delta(
+			manual_cltv_amount_msat,
+			&invoice_description.clone().into(),
+			9217,
+			manual_cltv_payment_hash,
+			min_final_cltv_expiry_delta,
+		)
+		.unwrap();
+	assert_eq!(
+		manual_cltv_invoice.min_final_cltv_expiry_delta(),
+		u64::from(min_final_cltv_expiry_delta) + 3
+	);
+	let manual_cltv_payment_id = node_a.bolt11_payment().send(&manual_cltv_invoice, None).unwrap();
+
+	let claimable_amount_msat = expect_payment_claimable_event!(
+		node_b,
+		manual_cltv_payment_id,
+		manual_cltv_payment_hash,
+		manual_cltv_amount_msat
+	);
+	node_b
+		.bolt11_payment()
+		.claim_for_hash(manual_cltv_payment_hash, claimable_amount_msat, manual_cltv_preimage)
+		.unwrap();
+	expect_payment_received_event!(node_b, claimable_amount_msat);
+	expect_payment_successful_event!(node_a, Some(manual_cltv_payment_id), None);
+
 	// Test failing manually registered payments.
 	let invoice_amount_4_msat = 5_532_000;
 	let manual_fail_preimage = PaymentPreimage([43u8; 32]);
@@ -1161,11 +1196,11 @@ pub(crate) async fn do_channel_full_cycle<E: ElectrumApi>(
 	));
 	assert_eq!(
 		node_a.list_payments_with_filter(|p| matches!(p.kind, PaymentKind::Bolt11 { .. })).len(),
-		5
+		6
 	);
 	assert_eq!(
 		node_b.list_payments_with_filter(|p| matches!(p.kind, PaymentKind::Bolt11 { .. })).len(),
-		6
+		7
 	);
 	assert_eq!(
 		node_a
@@ -1330,6 +1365,7 @@ pub(crate) async fn do_channel_full_cycle<E: ElectrumApi>(
 		+ invoice_amount_1_msat
 		+ overpaid_amount_msat
 		+ invoice_amount_3_msat
+		+ manual_cltv_amount_msat
 		+ determined_amount_msat
 		+ keysend_amount_msat)
 		/ 1000 - splice_out_sat;
